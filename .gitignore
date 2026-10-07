@@ -1,0 +1,3 @@
+source/upscaled/
+__pycache__/
+*.pth
