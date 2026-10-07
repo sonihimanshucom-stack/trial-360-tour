@@ -137,8 +137,13 @@ def load_source(name):
         return np.asarray(orig, dtype=np.float32) / 255.0
     sr = np.asarray(Image.open(sr_path).convert("RGB"), dtype=np.float32) / 255.0
     lz = np.asarray(orig.resize((sr.shape[1], sr.shape[0]), Image.LANCZOS), dtype=np.float32) / 255.0
-    rgb = sr * 0.82 + lz * 0.18
-    del sr, lz
+    # Super-resolution invents dark speckles inside blown highlights
+    # (chandelier crystals, sun); lean on the plain upscale there.
+    lum = luminance(lz)
+    hot = np.clip((lum - 0.62) / 0.22, 0, 1)[..., None]
+    w_lz = 0.18 + 0.62 * hot
+    rgb = sr * (1 - w_lz) + lz * w_lz
+    del sr, lz, lum, hot, w_lz
     rng = np.random.default_rng(7)
     grain = rng.normal(0, 1.1 / 255, rgb.shape[:2]).astype(np.float32)
     rgb += grain[..., None]
