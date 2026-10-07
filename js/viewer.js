@@ -49,7 +49,36 @@ vec3 rayFor(vec2 ndc, float s, mat3 rot){
   return rot * normalize(c);
 }
 
-vec3 sampleEq(sampler2D tex, vec3 dir){
+// Catmull-Rom bicubic filter built from 9 bilinear taps. Used when the
+// photo is magnified on screen: plain bilinear shows each source pixel as a
+// soft square; bicubic reconstructs smooth edges from the same pixels.
+vec3 bicubic(sampler2D tex, vec2 uv){
+  vec2 size = vec2(textureSize(tex, 0));
+  vec2 p = uv * size;
+  vec2 t1 = floor(p - 0.5) + 0.5;
+  vec2 f = p - t1;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 t0 = (t1 - 1.0) / size;
+  vec2 t3 = (t1 + 2.0) / size;
+  vec2 t12 = (t1 + w2 / w12) / size;
+  vec3 c = vec3(0.0);
+  c += textureLod(tex, vec2(t0.x,  t0.y),  0.0).rgb * w0.x  * w0.y;
+  c += textureLod(tex, vec2(t12.x, t0.y),  0.0).rgb * w12.x * w0.y;
+  c += textureLod(tex, vec2(t3.x,  t0.y),  0.0).rgb * w3.x  * w0.y;
+  c += textureLod(tex, vec2(t0.x,  t12.y), 0.0).rgb * w0.x  * w12.y;
+  c += textureLod(tex, vec2(t12.x, t12.y), 0.0).rgb * w12.x * w12.y;
+  c += textureLod(tex, vec2(t3.x,  t12.y), 0.0).rgb * w3.x  * w12.y;
+  c += textureLod(tex, vec2(t0.x,  t3.y),  0.0).rgb * w0.x  * w3.y;
+  c += textureLod(tex, vec2(t12.x, t3.y),  0.0).rgb * w12.x * w3.y;
+  c += textureLod(tex, vec2(t3.x,  t3.y),  0.0).rgb * w3.x  * w3.y;
+  return clamp(c, 0.0, 1.0);
+}
+
+vec3 sampleEq(sampler2D tex, vec3 dir, bool hq){
   float lon = atan(dir.x, -dir.z);
   float lat = asin(clamp(dir.y, -1.0, 1.0));
   vec2 uv = vec2(lon / (2.0 * PI) + 0.5, 0.5 - lat / PI);
@@ -60,22 +89,25 @@ vec3 sampleEq(sampler2D tex, vec3 dir){
   float dux2 = dFdx(u2), duy2 = dFdy(u2);
   if (abs(dux2) < abs(dux)) dux = dux2;
   if (abs(duy2) < abs(duy)) duy = duy2;
-  return textureGrad(tex, uv, vec2(dux, dFdx(uv.y)), vec2(duy, dFdy(uv.y))).rgb;
+  vec2 gx = vec2(dux, dFdx(uv.y)), gy = vec2(duy, dFdy(uv.y));
+  vec3 lin = textureGrad(tex, uv, gx, gy).rgb;
+  if (!hq) return lin;
+  // texels covered by one screen pixel; below 1 the photo is being magnified
+  vec2 size = vec2(textureSize(tex, 0));
+  float texelsPerPx = max(length(gx * size), length(gy * size));
+  float k = smoothstep(1.0, 0.7, texelsPerPx);
+  return k > 0.0 ? mix(lin, bicubic(tex, uv), k) : lin;
 }
 
 vec3 shade(sampler2D tex, vec2 ndc, float s, mat3 rot){
-  vec3 col = sampleEq(tex, rayFor(ndc, s, rot));
-  if (uBlur > 0.001) {
-    // radial zoom blur toward the screen centre, sells the forward motion
-    float w = 1.0;
-    for (int i = 1; i <= 8; i++) {
-      float k = 1.0 - uBlur * 0.03 * float(i);
-      col += sampleEq(tex, rayFor(ndc * k, s, rot));
-      w += 1.0;
-    }
-    col /= w;
+  if (uBlur <= 0.001) return sampleEq(tex, rayFor(ndc, s, rot), true);
+  // radial zoom blur toward the screen centre, sells the forward motion
+  vec3 col = sampleEq(tex, rayFor(ndc, s, rot), false);
+  for (int i = 1; i <= 8; i++) {
+    float k = 1.0 - uBlur * 0.03 * float(i);
+    col += sampleEq(tex, rayFor(ndc * k, s, rot), false);
   }
-  return col;
+  return col / 9.0;
 }
 
 void main(){
@@ -256,6 +288,13 @@ export class PanoViewer {
         blob = new Blob(chunks, { type: "image/jpeg" });
       } else blob = await res.blob();
       source = await createImageBitmap(blob, { imageOrientation: "none", premultiplyAlpha: "none" });
+      if (source.width > this.maxTex) {
+        // full-resolution originals can exceed what this GPU accepts (e.g. 11K
+        // on an 8K-limit phone); fit them with a high-quality resample
+        const w = this.maxTex, h = Math.round((source.height * w) / source.width);
+        source.close();
+        source = await createImageBitmap(blob, { imageOrientation: "none", premultiplyAlpha: "none", resizeWidth: w, resizeHeight: h, resizeQuality: "high" });
+      }
     } catch (e) {
       source = await new Promise((resolve, reject) => {
         const img = new Image();
@@ -267,6 +306,7 @@ export class PanoViewer {
     }
     onProgress?.(1);
     const tex = this._createTexture(source);
+    tex._width = source.width;
     source.close?.();
     return tex;
   }
@@ -277,6 +317,7 @@ export class PanoViewer {
 
   setTexture(tex) {
     this.texA = tex;
+    this.texWidth = tex?._width;
   }
 
   // -------------------------------------------------------------- matrices
@@ -428,7 +469,7 @@ export class PanoViewer {
     // commit: B becomes the current scene
     this.yaw += this.deltaB;
     this.deltaB = 0;
-    this.texA = texB;
+    this.setTexture(texB);
     this.texB = null;
     this.mix = 0;
     this.blur = 0;
@@ -577,8 +618,14 @@ export class PanoViewer {
     });
   }
 
+  /** Closest zoom allowed: stop before the photo is magnified past ~4x. */
+  _minScaleFor() {
+    const w = this.texWidth || 4096;
+    return Math.max(this.minScale, (this.cssH * PI) / (4 * w));
+  }
+
   zoomBy(f, immediate = false) {
-    const max = this.planetMode ? 4 : this.maxScale, min = this.planetMode ? 1.2 : this.minScale;
+    const max = this.planetMode ? 4 : this.maxScale, min = this.planetMode ? 1.2 : this._minScaleFor();
     this.targetScale = clamp(this.targetScale * f, min, max);
     if (immediate) this.scale = this.targetScale;
   }
