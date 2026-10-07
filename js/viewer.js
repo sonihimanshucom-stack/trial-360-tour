@@ -165,7 +165,7 @@ export class PanoViewer {
     this.scaleAMul = 1;
     this.scaleBMul = 1;
     this.deltaB = 0;
-    this.vignette = 0.32;
+    this.vignette = 0; // show the photos exactly as shot
 
     this.onFrame = null;
     this._anims = [];
