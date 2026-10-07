@@ -13,18 +13,14 @@ An immersive, dependency-free 360° tour of Radisson Blu Udaipur Palace Resort &
 - **Guided tour mode** with auto-rotation and per-scene progress.
 - **Live resort map** with a view cone that follows where you're looking.
 - **Inertial drag**, pinch and wheel zoom, keyboard controls (arrows, `+`/`-`, `[`/`]`), fullscreen, share, and deep links (`#courtyard`).
-- **Progressive loading.** The 2K image paints first, then the 4K master streams in on desktop, and neighbouring scenes are preloaded.
+- **Preloading** of neighbouring scenes so walking between them is instant.
 
-## Image enhancement
+## Photos
 
-`tools/enhance.py` grades the raw captures in `source/panoramas/`. It applies levels, shadow lift and highlight roll-off, local contrast, vibrance and a warm balance. It also removes the camera/hand smear at the nadir and blends the wrap-around seam. Then it exports these renditions to `assets/pano/`:
-
-- a 4096×2048 master
-- a 2048×1024 version
-- a thumbnail
+The panoramas are the original camera files, unedited. `assets/pano/<name>.jpg` is a byte-for-byte copy of `source/panoramas/<name>.jpg`. `tools/thumbs.py` copies them across and makes the small scene-card thumbnails:
 
 ```bash
-python3 tools/enhance.py   # needs Pillow + NumPy
+python3 tools/thumbs.py   # needs Pillow
 ```
 
 ## Run locally
@@ -49,7 +45,7 @@ css/style.css       design system
 js/viewer.js        WebGL2 panorama engine (projection, transitions, gyro, input)
 js/tour.js          tour controller (hotspots, dock, map, guided mode)
 js/tour-data.js     scenes, hotspots and copy
-tools/enhance.py    photo grading pipeline
+tools/thumbs.py     thumbnail generator
 source/panoramas/   original captures
-assets/pano/        graded renditions
+assets/pano/        panoramas served to the viewer (unedited) + thumbnails
 ```
