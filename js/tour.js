@@ -40,14 +40,29 @@ try {
 const cache = new Map(); // id -> Promise<texture>
 function ensure(id, { onProgress } = {}) {
   if (!cache.has(id)) {
-    const p = viewer.loadTexture(`assets/pano/${id}.jpg`, onProgress);
+    // WebP (q95, visually identical, ~3x lighter); original camera JPEG as fallback
+    const p = viewer
+      .loadTexture(`assets/pano/${id}.webp`, onProgress)
+      .catch(() => viewer.loadTexture(`assets/pano/${id}.jpg`, onProgress));
     p.catch(() => cache.delete(id)); // allow a retry after a failed load
     cache.set(id, p);
   }
   return cache.get(id);
 }
 const neighbours = (id) => byId[id].hotspots.filter((h) => h.type === "scene").map((h) => h.to);
-const preloadAround = (id) => neighbours(id).forEach((n) => ensure(n).catch(() => {}));
+// Full-resolution panoramas take ~100 MB of GPU memory each, so only the
+// current scene and the ones you can walk to next stay loaded.
+function preloadAround(id) {
+  const keep = new Set([id, ...neighbours(id)]);
+  for (const [other, p] of cache) {
+    if (keep.has(other)) continue;
+    cache.delete(other);
+    p.then((tex) => {
+      if (tex !== viewer.texA && tex !== viewer.texB) viewer.deleteTexture(tex);
+    }, () => {});
+  }
+  neighbours(id).forEach((n) => ensure(n).catch(() => {}));
+}
 
 // ------------------------------------------------------------ state
 let current = null;

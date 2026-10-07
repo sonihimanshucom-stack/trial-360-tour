@@ -1,10 +1,13 @@
-"""Make the scene-card thumbnails from the original panoramas.
+"""Build the web assets from the original camera panoramas.
 
-Usage: python3 tools/thumbs.py   (run from the repository root; needs Pillow)
+Usage: python3 tools/prepare.py   (run from the repository root; needs Pillow)
 
-The panoramas themselves are served untouched: assets/pano/<name>.jpg is a
-byte-for-byte copy of source/panoramas/<name>.jpg. This script only writes
-assets/pano/<name>-thumb.jpg, a plain crop of the opening view.
+For each source/panoramas/<name>.jpg (the untouched camera export) this writes
+into assets/pano/:
+  <name>.webp       WebP at quality 95: ~3x smaller than the camera JPEG and
+                    visually identical (PSNR ~44-45 dB). The viewer loads this.
+  <name>.jpg        byte-for-byte copy of the original, used as a fallback.
+  <name>-thumb.jpg  small crop of the opening view for the scene cards.
 """
 import shutil
 from pathlib import Path
@@ -37,6 +40,8 @@ if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     for name, yaw in YAW.items():
         src = SRC / f"{name}.jpg"
+        img = Image.open(src).convert("RGB")
         shutil.copyfile(src, OUT / f"{name}.jpg")
-        thumb(Image.open(src).convert("RGB"), yaw).save(OUT / f"{name}-thumb.jpg", quality=88)
+        img.save(OUT / f"{name}.webp", "WEBP", quality=95, method=6)
+        thumb(img, yaw).save(OUT / f"{name}-thumb.jpg", quality=88)
         print(f"  {name}")

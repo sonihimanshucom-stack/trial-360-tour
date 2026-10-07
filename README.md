@@ -17,10 +17,14 @@ An immersive, dependency-free 360° tour of Radisson Blu Udaipur Palace Resort &
 
 ## Photos
 
-The panoramas are the original camera files, unedited. `assets/pano/<name>.jpg` is a byte-for-byte copy of `source/panoramas/<name>.jpg`. `tools/thumbs.py` copies them across and makes the small scene-card thumbnails:
+`source/panoramas/` holds the original 6080×3040 camera exports, unedited. `tools/prepare.py` builds the web assets in `assets/pano/`:
+
+- **`<name>.webp`:** WebP at quality 95, about 3× smaller than the camera JPEG and visually identical (PSNR ~44–45 dB). The viewer loads this file.
+- **`<name>.jpg`:** a byte-for-byte copy of the original, used as a fallback.
+- **`<name>-thumb.jpg`:** a scene-card thumbnail.
 
 ```bash
-python3 tools/thumbs.py   # needs Pillow
+python3 tools/prepare.py   # needs Pillow
 ```
 
 ## Run locally
@@ -45,7 +49,7 @@ css/style.css       design system
 js/viewer.js        WebGL2 panorama engine (projection, transitions, gyro, input)
 js/tour.js          tour controller (hotspots, dock, map, guided mode)
 js/tour-data.js     scenes, hotspots and copy
-tools/thumbs.py     thumbnail generator
+tools/prepare.py    builds WebP + thumbnails from the originals
 source/panoramas/   original captures
 assets/pano/        panoramas served to the viewer (unedited) + thumbnails
 ```
