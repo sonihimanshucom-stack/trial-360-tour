@@ -2,9 +2,11 @@
 
 Usage: python3 tools/enhance.py   (run from the repository root)
 
-For every panorama in source/panoramas/ this writes into assets/pano/:
-  <name>.jpg       4096x2048 master (desktop)
-  <name>-2k.jpg    2048x1024 (mobile / fast first paint)
+Input: source/upscaled/<name>.png (Real-ESRGAN 4x, see tools/upscale.py),
+falling back to source/panoramas/<name>.jpg. Writes into assets/pano/:
+  <name>-8k.jpg    8192x4096 master (desktop GPUs that support 8K textures)
+  <name>.jpg       4096x2048 (phones, tablets, older GPUs)
+  <name>-2k.jpg    2048x1024 (instant first paint)
   <name>-thumb.jpg 640x360 crop of the opening view (scene cards)
 """
 from pathlib import Path
@@ -14,6 +16,7 @@ from PIL import Image, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "source" / "panoramas"
+UPSCALED = ROOT / "source" / "upscaled"
 OUT = ROOT / "assets" / "pano"
 
 # Per-scene grading. yaw_deg is the opening view used for the thumbnail crop.
@@ -48,7 +51,7 @@ def levels(rgb, strength=0.6):
 
 def local_contrast(rgb, amount):
     lum = luminance(rgb)
-    base = gaussian(lum, 28)
+    base = gaussian(lum, 28 * rgb.shape[1] / 2000)
     boosted = np.clip(lum + (lum - base) * amount, 0, 1)
     ratio = (boosted + 1e-4) / (lum + 1e-4)
     return np.clip(rgb * ratio[..., None], 0, 1)
@@ -91,7 +94,7 @@ def clean_nadir(rgb):
     ring_mean = band.mean(axis=1, keepdims=True)  # each row = one ring around nadir
     rows = np.linspace(0, 1, h - start)[:, None, None]
     weight = np.clip((rows - 0.35) / 0.65, 0, 1) ** 1.5
-    soft = np.stack([gaussian(band[..., c], 6) for c in range(3)], -1)
+    soft = np.stack([gaussian(band[..., c], 6 * w / 2000) for c in range(3)], -1)
     rgb[start:] = soft * (1 - weight) + ring_mean * weight
     blend = np.clip((rows - 0.0) / 0.35, 0, 1)
     rgb[start:] = band * (1 - blend) + rgb[start:] * blend
@@ -100,6 +103,7 @@ def clean_nadir(rgb):
 
 def fix_seam(rgb, cols=12):
     """Cross-fade the left/right edges so the wrap-around seam disappears."""
+    cols = max(cols, rgb.shape[1] * cols // 2000)
     left, right = rgb[:, :cols].copy(), rgb[:, -cols:].copy()
     avg = (left[:, :1] + right[:, -1:]) / 2
     for i in range(cols):
@@ -119,9 +123,30 @@ def thumb(img, yaw_deg, size=(640, 360)):
     return crop.resize(size, Image.LANCZOS)
 
 
+def load_source(name):
+    """AI-upscaled image with a little of the original texture mixed back in.
+
+    Real-ESRGAN gives clean edges but irons out fine texture (fabric, carpet,
+    grass); blending a share of a plain Lanczos upscale plus a whisper of grain
+    keeps surfaces photographic instead of painted.
+    """
+    orig = Image.open(SRC / f"{name}.jpg").convert("RGB")
+    sr_path = UPSCALED / f"{name}.png"
+    if not sr_path.exists():
+        print(f"  {name}: no AI upscale found, using original")
+        return np.asarray(orig, dtype=np.float32) / 255.0
+    sr = np.asarray(Image.open(sr_path).convert("RGB"), dtype=np.float32) / 255.0
+    lz = np.asarray(orig.resize((sr.shape[1], sr.shape[0]), Image.LANCZOS), dtype=np.float32) / 255.0
+    rgb = sr * 0.82 + lz * 0.18
+    del sr, lz
+    rng = np.random.default_rng(7)
+    grain = rng.normal(0, 1.1 / 255, rgb.shape[:2]).astype(np.float32)
+    rgb += grain[..., None]
+    return np.clip(rgb, 0, 1)
+
+
 def process(name, cfg):
-    src = Image.open(SRC / f"{name}.jpg").convert("RGB")
-    rgb = np.asarray(src, dtype=np.float32) / 255.0
+    rgb = load_source(name)
     rgb = levels(rgb)
     rgb = tone(rgb, cfg["shadows"])
     rgb = local_contrast(rgb, cfg["local"])
@@ -131,9 +156,16 @@ def process(name, cfg):
     rgb = fix_seam(rgb)
     graded = Image.fromarray((rgb * 255 + 0.5).astype(np.uint8))
 
-    master = graded.resize((4096, 2048), Image.LANCZOS)
-    master = master.filter(ImageFilter.UnsharpMask(radius=1.6, percent=55, threshold=2))
-    master.save(OUT / f"{name}.jpg", quality=86, optimize=True, progressive=True, subsampling=0)
+    if graded.width >= 8000:
+        master8 = graded.resize((8192, 4096), Image.LANCZOS)
+        master8.filter(ImageFilter.UnsharpMask(radius=1.2, percent=35, threshold=2)).save(
+            OUT / f"{name}-8k.jpg", quality=90, optimize=True, progressive=True)
+        del master8
+        sharpen = ImageFilter.UnsharpMask(radius=0.9, percent=45, threshold=2)
+    else:
+        sharpen = ImageFilter.UnsharpMask(radius=1.6, percent=55, threshold=2)
+    master = graded.resize((4096, 2048), Image.LANCZOS).filter(sharpen)
+    master.save(OUT / f"{name}.jpg", quality=90, optimize=True, progressive=True, subsampling=0)
 
     graded.resize((2048, 1024), Image.LANCZOS).filter(
         ImageFilter.UnsharpMask(radius=1.0, percent=40, threshold=2)

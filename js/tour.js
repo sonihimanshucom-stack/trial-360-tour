@@ -36,32 +36,55 @@ try {
   throw e;
 }
 
-// Desktop gets the 4K masters; phones stay on 2K to keep GPU memory sane.
-const wantHi = viewer.maxTex >= 4096 && !(isTouch && Math.min(screen.width, screen.height) < 900);
+// Quality tiers: 0 = 2K (instant first paint), 1 = 4K, 2 = 8K master.
+// The 8K master goes to desktop GPUs that can hold it; phones top out at 4K.
+const TIER_SUFFIX = ["-2k", "", "-8k"];
+const memoryOk = !navigator.deviceMemory || navigator.deviceMemory >= 4;
+const maxTier = viewer.maxTex >= 8192 && !isTouch && memoryOk ? 2 : viewer.maxTex >= 4096 ? 1 : 0;
 
-const cache = new Map(); // id -> { tex, hi, pending }
-function ensure(id, { hi = false, onProgress } = {}) {
-  const entry = cache.get(id) || {};
-  if (entry.tex && (entry.hi || !hi)) return Promise.resolve(entry.tex);
-  const key = hi ? "hiPending" : "pending";
-  if (entry[key]) return entry[key];
-  const url = `assets/pano/${id}${hi ? "" : "-2k"}.jpg`;
-  entry[key] = viewer.loadTexture(url, onProgress).then((tex) => {
-    if (entry.tex && entry.tex !== tex) {
+const cache = new Map(); // id -> { tex, tier, pending: {tier: Promise} }
+function ensure(id, { tier = 0, onProgress } = {}) {
+  tier = Math.min(tier, maxTier);
+  const entry = cache.get(id) || { tier: -1, pending: {} };
+  cache.set(id, entry);
+  if (entry.tex && entry.tier >= tier) return Promise.resolve(entry.tex);
+  if (entry.pending[tier]) return entry.pending[tier];
+  const url = `assets/pano/${id}${TIER_SUFFIX[tier]}.jpg`;
+  entry.pending[tier] = viewer.loadTexture(url, onProgress).then((tex) => {
+    delete entry.pending[tier];
+    if (entry.tier >= tier) {
+      viewer.deleteTexture(tex); // a sharper copy landed first
+      return entry.tex;
+    }
+    if (entry.tex) {
       if (viewer.texA === entry.tex) viewer.setTexture(tex);
       viewer.deleteTexture(entry.tex);
     }
     entry.tex = tex;
-    entry.hi = entry.hi || hi;
-    entry[key] = null;
+    entry.tier = tier;
     return tex;
   });
-  cache.set(id, entry);
-  return entry[key];
+  return entry.pending[tier];
 }
-const upgrade = (id) => wantHi && ensure(id, { hi: true }).catch(() => {});
+// step the current scene up through the tiers
+async function upgrade(id) {
+  for (let t = 1; t <= maxTier; t++) {
+    if (current !== id) return;
+    await ensure(id, { tier: t }).catch(() => {});
+  }
+}
+// keep GPU memory in check: only the current scene holds an 8K texture
+function releaseOthers(id) {
+  for (const [other, entry] of cache) {
+    if (other === id || entry.tier < 2 || !entry.tex) continue;
+    if (viewer.texA === entry.tex || viewer.texB === entry.tex) continue;
+    viewer.deleteTexture(entry.tex);
+    entry.tex = null;
+    entry.tier = -1;
+  }
+}
 const neighbours = (id) => byId[id].hotspots.filter((h) => h.type === "scene").map((h) => h.to);
-const preloadAround = (id) => neighbours(id).forEach((n) => ensure(n).catch(() => {}));
+const preloadAround = (id) => neighbours(id).forEach((n) => ensure(n, { tier: 1 }).catch(() => {}));
 
 // ------------------------------------------------------------ state
 let current = null;
@@ -258,6 +281,7 @@ async function goTo(id, link = null, hsEl = null) {
   setCaption(scene);
   ui.hotspots.classList.remove("hidden");
   busy = false;
+  releaseOthers(id);
   upgrade(id);
   preloadAround(id);
   if (guided) scheduleGuided();
